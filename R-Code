@@ -1,0 +1,290 @@
+#Loading Libraries 
+
+library(dplyr)
+library(faux)
+library(caret)
+library(randomForest)
+library(ROSE)
+library(e1071)
+library(corrplot)
+library(tidymodels)
+library(tidyverse)
+library(class)
+library(caTools)
+library(DataExplorer)
+library(glmnet)
+library(xgboost)
+library(class)
+library(pROC)
+library(neuralnet)
+library(keras)
+library(DMwR2)
+library(InformationValue)
+library(ISLR)
+library(naivebayes)
+library(plotROC)
+
+#Loading the dataset 
+
+df <- read.csv("/Users/prathamdave/Desktop/africa_recession.csv")
+
+#Inspecting the datase
+
+str(df)
+summary(df)
+head(df)
+prop.table(table(df$growthbucket))
+
+#Visualizing the dataset 
+
+df <- df %>%
+  mutate(growthbucket_factor = as.factor(growthbucket))
+
+barplot(table(df$growthbucket_factor), main = "Classification of a Recession", xlab = "No recession = 0 and Recession = 1", ylab = "Count", col = "blue", density = 10)
+
+#Eliminating Highly Correlated Variables 
+
+data_correlation_elimination <- df[1:50]
+cor_matrix <- cor(data_correlation_elimination)                      
+cor_matrix
+
+cor_matrix_rm <- cor_matrix                 
+cor_matrix_rm[upper.tri(cor_matrix_rm)] <- 0
+diag(cor_matrix_rm) <- 0
+cor_matrix_rm
+
+data_correlated <- data_correlation_elimination[ , !apply(cor_matrix_rm,    
+                                                          2,
+                                                          function(x) any(x > 0.75))]
+
+data_correlated <- data_correlated %>%
+  mutate(growthbucket = df$growthbucket)
+
+#Scaling all the numeric features & Further Processing
+
+data <- data_correlated %>%
+  mutate(growthbucket_factor = as.factor(growthbucket))
+
+data$growthbucket <- NULL
+
+#Visualizing the dataset
+
+plot_intro(data)
+
+plot_correlation(data)
+
+#Splitting the dataset for balancing (2000-2011 data is used to train and testing is done using data from 2011-2017)
+
+set.seed(1234)
+training_dataset <- data[1:352,]
+testing_dataset <- data[352:487,]
+
+#Balancing and Splitting the dataset: training_dataset 
+
+n_recession_train <- 323
+new_frac_recession_train <- 0.5
+new_n_total_train <- n_recession_train/new_frac_recession_train
+oversampling_result_train <- ovun.sample(formula = growthbucket_factor ~., data = training_dataset, method = "over", N = new_n_total_train, seed = 2018)
+train_data <- oversampling_result_train$data
+prop.table(table(train_data$growthbucket_factor))
+
+training <- as.data.frame(train_data[,1:27])
+trainingtarget <- train_data[,28]
+
+#Balancing and Splitting the dataset: testing_dataset 
+
+n_recession_test <- 125
+new_frac_recession_test <- 0.5
+new_n_total_test <- n_recession_test/new_frac_recession_test
+oversampling_result_test <- ovun.sample(formula = growthbucket_factor ~., data = testing_dataset, method = "over", N = new_n_total_test, seed = 2017)
+test_data <- oversampling_result_test$data
+prop.table(table(test_data$growthbucket_factor))
+
+testing <- as.data.frame(train_data[,1:27])
+testingtarget <- train_data[,28]
+
+#Recursive Feature Elimination
+
+#Defining the random forest control 
+
+control <- rfeControl(functions = rfFuncs, 
+                      method = "repeatedcv", 
+                      repeats = 5, 
+                      number = 10) 
+
+result_rfe1 <- rfe(x = training , 
+                   y = trainingtarget, 
+                   sizes = c(1:27),
+                   rfeControl = control)
+
+result_rfe1
+predictors(result_rfe1)
+
+#Visualizing the Recursive Feature Elimination Results 
+ggplot(data = result_rfe1, metric = "Accuracy") + theme_bw()
+ggplot(data = result_rfe1, metric = "Kappa") + theme_bw()
+
+
+varimp_data <- data.frame(feature = row.names(varImp(result_rfe1))[1:15],
+                          importance = varImp(result_rfe1)[1:15, 1])
+
+ggplot(data = varimp_data, 
+       aes(x = reorder(feature, -importance), y = importance, fill = feature)) +
+  geom_bar(stat="identity") + labs(x = "Features", y = "Variable Importance") + 
+  geom_text(aes(label = round(importance, 2)), vjust=1.6, color="white", size=4) + 
+  theme_bw() + theme(legend.position = "none")
+
+#Lasso Regression
+
+set.seed(100)
+x <- as.matrix(train_data[,1:27])
+cv.lasso <- cv.glmnet(x, trainingtarget, family='binomial', alpha=1, parallel=TRUE, standardize=TRUE, type.measure='auc')
+plot(cv.lasso)
+cat('Min Lambda: ', cv.lasso$lambda.min, '\n 1Sd Lambda: ', cv.lasso$lambda.1se)
+importance_lasso <- round(as.matrix(coef(cv.lasso, s=cv.lasso$lambda.min)), 2)
+order(importance_lasso)
+
+#Genetic Algorithims 
+
+ga_ctrl <- gafsControl(functions = rfGA,
+                       method = "cv",
+                       repeats = 3)
+
+ga_obj <- gafs(x=training,
+               y=trainingtarget, 
+               iters = 5,
+               gafsControl = ga_ctrl)
+
+ga_obj
+
+genetic_algorithim_features <- ga_obj$optVariables
+
+#Visualizing the Genetic Algorithim's Results
+
+varimp_data <- data.frame(feature = row.names(varImp(ga_obj))[1:15],
+                          importance = varImp(ga_obj)[1:15, 1])
+
+ggplot(data = varimp_data, 
+       aes(x = reorder(feature, -importance), y = importance, fill = feature)) +
+  geom_bar(stat="identity") + labs(x = "Features", y = "Variable Importance") + 
+  geom_text(aes(label = round(importance, 2)), vjust=1.6, color="white", size=4) + 
+  theme_bw() + theme(legend.position = "none")
+
+#Important Features 
+
+recursive_feature_elimination_results <- order(predictors(result_rfe1))
+lasso_feature_selection_results <- order(importance_lasso)
+genetic_algorithims_featureV_selection_results <-  order(ga_obj$optVariables)
+
+recursive_feature_elimination_results
+lasso_feature_selection_results
+genetic_algorithims_featureV_selection_results
+
+#Building the Machine Learning Models
+
+#Model 1 - Random Forest (based on the results of the genetic algorithim)
+
+random_forest_ga <- ga_obj$fit
+rf_ga_predictions <- predict(random_forest_ga, testing)
+
+#Confusion Matrix and Evaluation
+
+outcomes_forest <- confusionMatrix(rf_ga_predictions, testingtarget, mode = "everything", positive = "1")
+outcomes_forest
+
+#Creating a dataset comprised of the important variables 
+
+#Creating a training dataset comprised of the important variables
+
+Emp_to_pop_ratio_train <- training$emp_to_pop_ratio
+hc_train <- training$hc
+cwtfp_train <- training$cwtfp
+rnna_train <- training$rnna
+rkna_train <- training$rkna
+labsh_train <- training$labsh
+pl_n_train <- training$pl_n
+trainingtarget_important <- trainingtarget
+
+training_data_important <- data.frame(Emp_to_pop_ratio_train, hc_train, cwtfp_train, rnna_train, rkna_train, labsh_train, pl_n_train, trainingtarget_important)
+
+#Creating a testing dataset comprised of the important variables
+
+Emp_to_pop_ratio_test <- testing$emp_to_pop_ratio
+hc_train <- testing$hc
+cwtfp_train <- testing$cwtfp
+rnna_train <- testing$rnna
+rkna_train <- testing$rkna
+labsh_train <- testing$labsh
+pl_n_train <- testing$pl_n
+testingtarget_important <- testingtarget
+
+testing_data_important <-data.frame(Emp_to_pop_ratio_test, hc_train,cwtfp_train, rnna_train, rkna_train, labsh_train, pl_n_train,  trainingtarget_important)
+
+#Model 2 - Multiple Logistic Regression (this was done to get a basline)
+
+logistic_model <- glm(trainingtarget_important ~., data = training_data_important, family = "binomial")
+ 
+#Confusion Matrix and Evaluation (accuracy is only 70%)
+
+logistic_model_predictions <- round(predict(logistic_model, testing_data_important, type = "response"))
+conf_mat(table(logistic_model_predictions, testingtarget_important))
+
+#Model 3 - Gradient Boosted Decision Tree
+
+#Specifying the model 
+
+boost_spec <- boost_tree(
+  trees = 500,
+  learn_rate = tune(),
+  tree_depth = tune(),
+  sample_size = tune()) %>%
+  set_mode("classification") %>%
+  set_engine("xgboost")
+
+
+tunegrid_boost <- grid_regular(hardhat::extract_parameter_set_dials(boost_spec), 
+                               levels = 3)
+
+folds <- vfold_cv(training_data_important, v = 6)
+
+tune_results <- tune_grid(boost_spec,
+                          trainingtarget_important ~.,
+                          resamples = folds,
+                          grid = tunegrid_boost,
+                          metrics = metric_set(roc_auc))
+
+#Selecting the best hyperparameters
+
+best_params <- select_best(tune_results)
+best_params
+
+final_spec <- finalize_model(boost_spec, best_params)
+final_spec
+
+final_model <- final_spec %>% fit(trainingtarget_important ~., data = training_data_important)
+final_model
+
+#Confusion Matrix and Evaluation
+
+gb_dc_predictions <- unlist(predict(final_model, testing_data_important, type = "class"))
+conf_mat(table(gb_dc_predictions,testingtarget_important))
+
+#Model 3 - Navie Bayes 
+
+set.seed(120) 
+naive_bayes_model <- naive_bayes(trainingtarget_important ~., data = training_data_important)
+
+#Confusion Matrix and Evaluation
+naive_bayes_predictions <- predict(naive_bayes_model,testing_data_important)
+table_bayes <- table(naive_bayes_predictions, testingtarget_important)
+ 
+#Model 4 - Support Vector Machine 
+
+svm_model <- svm(trainingtarget_important ~., data = training_data_important, kernel = "radial")
+
+#Confusion Matrix and Evaluation
+
+svm_model_predictions <- predict(svm_model,testing_data_important)
+table_svm <- table(svm_model_predictions, testingtarget_important)
+
+
